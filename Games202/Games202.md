@@ -192,3 +192,109 @@
     - 当只有点光源的时候和方向光源的时候，积分范围小到基本没积分什么事，这个式子就成立。
   - Smooth integrand(低频,变化不大)(diffuse(漫反射) bsdf(=brdf+btsd)/constant radiance area light)
     - 当在光源的radiance恒定(uniform)情况下，就比如一个面光源，当brdf是diffuse的情况下(glossy就不行)，右边的函数足够光滑，得到的结果也正确的。
+
+## Percentage closer soft shadows
+### Percentage Closer Filtering(PCF)
+* Provides `anti-aliasing` at shadows' edge
+  - Not for soft shadows(PCSS is,introducing later)
+  - Filtering the results of shadow comparisons
+* 不是对shadow map进行filitering
+  - 如果直接在shadow map上filtering就会造成阴影和物体交界直接糊起来
+    - Texture filitering just averages color componets,i.e. you will get blurred shadow map first
+  - 做深度测试的时候,判断结果任然是非0即1的(任然是阴影硬)
+    - Averaging depth vlaues,then comparing,you still get a binary visibility
+* 不是对最后得到有锯齿的阴影硬图做filtering
+  - 这样做只能得到模糊的带锯齿的图,还剩没有阴影硬也没有去掉锯齿
+    - 具体可以回顾GAMES101中的抗锯齿
+
+    ![](Games202/Filter_the_shadow_map.png)
+
+***
+
+* Solution[Reeves,SIGGAPRH 87]
+  - Perform multiple(e.g. 7*7) depth comparsions for each fragment
+    -对着色点周围一圈的像素与改点在shadow map中记录的深度做比较
+  - Then，averages results of comparisons
+    - 对这些比较结果做平均得到一个在0~1之间的值
+
+***
+* filitering size ->
+  - Small -> sharper
+  - Large -> softer
+
+## PCSS(Percentage Closer Soft Shadows)
+* 在面光源下,什么地方产生阴影硬,什么地方产生软阴影
+  - Filter size <-> blocker distance
+    - 遮挡物和阴影接受物的距离
+  - More accurately,`relative` `average` projected blocker depth
+    - 更准确，相对平均投影阻挡深度
+  - A mathematical "translation"
+    - 可以用相似三角形得出，filtering的范围大小可以通过遮挡物到被遮挡面的距离除以遮挡物到光源的距离乘以光源面积得到。
+    - $W_{penumbra} = (d_{Receiver} - d_{Blocker}) \cdot w_{Light} / d_{Blocker}$
+
+    ![](Games202/PCSS.png)
+
+***
+* Now the only question:
+  - what's the blocker dpeth $d_{Blocker}$
+    - 对于场景中的物体,遮挡物一般是不是一个点或者一个平面,收益对于某一着色点Blocker的$d_{Blocker}$需要对周围一定范围内的被遮挡物求平均,计算平均遮挡深度.
+
+* The complete algorithm of PCSS
+  - Step 1:Blocker serch
+    - getting the average blocker depth `in a certain region`
+      - 只对能够遮挡住的像素求平均
+  - Step 2:Penumbra estimation(半影估计)
+    - use the average blocker depth to determine filter size
+  - Step 3:Percentage Closer Filtering
+
+* 注意面光源无法生成Shadow map,这里生成shadow map通过将light放在面光源中心,当做点光源生成shadow map
+
+* which region to perform blocker search?
+  - can be set constant (e.g. 5*5),but can be better heuristics(启发式)
+
+* which region(on the shadow map) to perform blocker serach?
+  - depends on the light size
+  - and receiver's distance from the light
+>  可以把shader point连向light，看在shadow map(就是视锥体的近平面,就说用于光栅化的平面，在第一个PASS用于生成shadow map)所占范围来确定，因为离光源越远，遮挡物也会更多。
+
+![](Games202/PCSS_Blocker_Search_Size.png)
+
+## 答疑
+
+1.纯工业界问题最后一节说
+
+2.2倍的n不太能接受。 的确，会慢很多，还是很在乎常数的，不止复杂度
+
+3.离线渲染有这样用近似的吗。 好像没见过。
+
+4.有误差公式吗？ 没有必要
+
+5.smooth对左右两个函数都有要求吗。 只要一个
+
+6点光源怎么用pcss。 点光源本身生成的就是硬阴影，不用pcss
+
+7.shadow maping好处就是说任何一帧你都知道那个物体在哪，反正阴影都是重新算的，shodow map也是重新算的，和运动物体没关系。
+
+## More on PCF and PCSS(A Deeper Look at PCF)
+* The math behind PCF
+  - Filtering / convolution:
+    - $[ w * f](p) = \Sigma_{q \in N(p)} w(p,q)f(q)$
+      - 这个卷积公式,取p点领域内的所有点q,根据权值项w(p,q)对所有的f(q)进行加权平均
+      - w(p,q):根据p,q之间距离的一种权值
+  - PCSS
+    - $V(x) = \Sigma_{q \in N(p)} w(p,q) \cdot \chi^{+}[D_{SM}(q) - D_{scene}(x)]$
+      - $\chi^{+}[]$:为符号函数
+      - 这个公式将shading point点x对应shadow map上点p周围领域上的所有点q进行判断,这个点q是否能遮挡住shading point点x(即在shadow map上q点的深度是否小于p点的深度),并对所有的判断进行加权平均
+    ![](Games202/Deeper_Look%20_at%20_PCF.png)
+  - PCSS不是filteringshadow map
+    - $V(X) \neq \chi^{+}\{[w * D_{sm}](q) - D_{scene}(x)\}$
+  - PCSS不是对最后生成的图进行filtering
+    - $V(x) \neq \Sigma_{y \in N(x)}w(x,y)V(y)$
+
+***
+* in PCSS,which step(s) can be slow?
+  - Looking at very texel inside a region(step 1 and 3)
+    - 都要对区域内所有像素进行比较
+  - Softer -> larger filtering region -> slower
+
+  ## VSSM(Variance Soft Shadow Mapping)
