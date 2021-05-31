@@ -386,6 +386,8 @@ $$
     - r:距离
 * $max(0,\mathbf{n} \cdot \mathbf{l})$:着色点接受的能量
 
+![](Games101/Lambert_Shading.png)
+
 ***
 
 * 漫反射跟view(观测方向)没有关系

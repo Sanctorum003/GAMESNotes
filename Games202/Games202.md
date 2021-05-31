@@ -108,7 +108,7 @@
 * 8.问：不同shader里定义里的变量会通用吗？
 * 答：不是
 
-# Real-time Shadows 1
+# Real-time Shadows 
 ## shadow Mapping
 
 * A 2-Pass Algorithm
@@ -193,7 +193,7 @@
   - Smooth integrand(低频,变化不大)(diffuse(漫反射) bsdf(=brdf+btsd)/constant radiance area light)
     - 当在光源的radiance恒定(uniform)情况下，就比如一个面光源，当brdf是diffuse的情况下(glossy就不行)，右边的函数足够光滑，得到的结果也正确的。
 
-## Percentage closer soft shadows
+## Percentage closer soft shadows(PCSS)
 ### Percentage Closer Filtering(PCF)
 * Provides `anti-aliasing` at shadows' edge
   - Not for soft shadows(PCSS is,introducing later)
@@ -222,7 +222,7 @@
   - Small -> sharper
   - Large -> softer
 
-## PCSS(Percentage Closer Soft Shadows)
+### PCSS(Percentage Closer Soft Shadows)
 * 在面光源下,什么地方产生阴影硬,什么地方产生软阴影
   - Filter size <-> blocker distance
     - 遮挡物和阴影接受物的距离
@@ -259,7 +259,7 @@
 
 ![](Games202/PCSS_Blocker_Search_Size.png)
 
-## 答疑
+### 答疑
 
 1.纯工业界问题最后一节说
 
@@ -275,7 +275,7 @@
 
 7.shadow maping好处就是说任何一帧你都知道那个物体在哪，反正阴影都是重新算的，shodow map也是重新算的，和运动物体没关系。
 
-## More on PCF and PCSS(A Deeper Look at PCF)
+### More on PCF and PCSS(A Deeper Look at PCF)
 * The math behind PCF
   - Filtering / convolution:
     - $[ w * f](p) = \Sigma_{q \in N(p)} w(p,q)f(q)$
@@ -297,4 +297,133 @@
     - 都要对区域内所有像素进行比较
   - Softer -> larger filtering region -> slower
 
-  ## VSSM(Variance Soft Shadow Mapping)
+## VSSM(Variance Soft Shadow Mapping)
+* 特点
+  - Fast blocker search(对应pcss第一步)
+  - Fast filtering(对应pcss第二步)
+
+### 解法第三步的问题
+* 第三步就是PCF，PCF要和周围一圈进行深度比较得出是否被遮挡，进一步就可以理解成有多少texels比取的点深度浅或深度深
+  - 就可以比喻成一个人的成绩在班上能排在多少。要知道一个人的成绩排多少，就要知道全班人的成绩，这就是之前PCF的做法。
+
+* VSSM的做法就说避免遍历周围所有的texels进行比较.
+  - 为了避免把所有人成绩看一遍，可以通过值方图得到一个相对精确的排名
+  - 不需要那么准的话就可以当做一个正态分布
+    - 正态分布就只需要方差和平均值就能得出
+  - Variance soft shadow mapping的思路就是这样，通过正态分布来得到结果。
+***
+* VSSM Key idea
+  - Quickly compute the mean(均值) and variance(方差) of depths in an area
+* quicklye compute mean
+  - Hardware `mipmap`ing
+    - 缺点: 只能方形查询,通过三线性插值获得近似得到值不准
+  - 改进方法: Summed Area Tables(SAT)
+*  quicklye compute Variance
+  - $Var(x) = E(X^{2}) - E^{2}(X)$
+    - 范围平均查询得到是就是E(X)
+  - So you just need the man of ($depth^2$)
+    - Just generate a "square-dpeth map" along with the shadow map!
+      - $E(X^{2})$通过生成某一张shadow map里面存储距离的平方,再用范围平均查询就能得到$E(X^{2})$
+***
+* Back to the question
+  - 通过mean(均值)和variance(方差)就可以构造出正态分布,就可以通过算面积得出有多少texels深度比shadow point的点小
+  - 对于通用的高斯的PDF，可以把积分的值打成表，积分的值就是误差函数（error function）。这个积分没有解析解，只有数值解，c++有个内置函数就是erf就能做CDF。
+    - PDF：概率密度函数（probability density function）, 在数学中，连续型随机变量的概率密度函数（在不至于混淆时可以简称为密度函数）是一个描述这个随机变量的输出值，在某个确定的取值点附近的可能性的函数。
+    - CDF : 累积分布函数 (cumulative distribution function)，又叫分布函数，是概率密度函数的积分，能完整描述一个实随机变量X的概率分布。
+      - CDF(X)就是x~pdf(x)下的概率
+    - [概率论中PDF、PMF和CDF的区别与联系](https://blog.csdn.net/yzcjwddbdgg/article/details/88063677)
+***
+* it doesn't have to be too accurate!
+  - Chebychev's inequality(one-tailed version,for t > mu)(切比雪夫不等式，要求t在均值右边)
+
+  ![](Games202/Chebychev_inequality.png)
+
+  - 特点
+    - 适用于任何pdf,但要求pdf函数比较简单.
+    - 值适用于t在mean右边的情况.
+    - rtr一般把不等当成约等
+
+***
+* VSSM性能
+  - Shadow map generation
+    - "square depth map":pararllel,along wtih shadow map,#pixels
+      - 生成shadow map的时候,在这张shadow map的其他通道存储距离的平方,这样可以节省空间.
+  - Runtime
+    - Mean of depth in a range:O(1)
+    - Mean of depth square in a range:O(1)
+    - chebychev:O(1)
+    - No samples / loops needed
+* step 3(filtering) solved perfectly
+
+### 解决第一步的问题
+* Back to Step1 : Blocker search(with an area)
+  - Also require sampling(loop) earlier,also inefficient
+  - The average depth of blockers
+  - Not the average depth $Z_{avg}$(不是整块面积的平均)
+  - The average depth of those texels whose depth z < t(是所有遮挡物的平均)
+
+***
+* key idea
+  - Blocker(z < t),avg.$Z_{occ}$:遮挡像素的平局值
+  - Non-blocker(z > t),avg. $Z_{unocc}$：未遮挡像素的平均值
+  - 其满足等式:
+    $\frac{N_{1}}{N}z_{unocc} + \frac{N_{2}}{N}z_{occ} = z_{Avg}$
+    - N:总像素数
+    - N1:未遮挡像素数
+    - N2:遮挡像素数
+    - $z_{Avg}$:整块面积的平均像素
+  - Approximation:$\frac{N_{1}}{N} = P(x > t)$(切比雪夫)
+  - Approximation:$\frac{N_{2}}{N} = 1- P(x > t)$
+  - $z_{unocc},we really don't know$
+    - Approximation:$z_{unocc} = t (i.e. shadow receiver is a plane$
+      - 大多数阴影接受的都是平面
+  - Step1 solved with negligible additional cost
+
+### Mipmap and Summed-Area Variance Shadow Maps
+* 为了快速求得一个区域的均值和方差,需要对shadow map中的任意矩形区域进行范围查询
+  - MIPMAP 和 Summed Area Table(SAT)
+
+* 原理:前缀和
+
+## Moment shadow mapping 
+* VSSM问题
+  - VSSM做了很多假设，假设不对的时候会有问题。比如右图，只有三个片的遮挡的情况下，那么深度的分布就在这三个遮挡度深度周围，形成了三个峰值，自然就会出现假设描述的不准。
+
+![](Games202/VSSM_Problem.png)
+
+* Issues if the dpeth distribution is inaccurate
+  - 当shadow分布不是正太分布时效果差，产生漏光的现象.
+  - 接受面是非平面时会造成阴影断裂的现象.
+  - 切比雪夫不等式实际只在$t > Z_{avg}$时有效
+
+![](Games202/VSSM_Problem2.png)
+
+***
+* MSM
+  - Goal:Represent a distribution more accurately(but still not too costly to store)
+  - Idea:use higher order moments to represent a distribution
+
+* Moments
+  - 简单定义:$x,x^{2},x^{3},x^{4},....$
+  - So,VSSM is essentially using the first two orders of moments
+
+* What can moments do?
+  - Conclusion:如果保留前M阶的矩，就能描述一个阶跃函数，阶数等2/M,就等于某种展开。越多的阶数就和原本的分布越拟合。一般来说4阶就够用。
+  ![](Games202/MSM.png)
+  - Restore the CDF during blocker search & PCF
+
+***
+* Pro:very nice results
+* Cons
+  - Costly storage(might be fine)
+  - Costly performace(in the reconstrcution)
+    - 如何从多个矩计算PCF,非常复杂
+
+***
+* 问题集合：
+  - 1.接收平面是曲面怎么办。 不只是曲面，甚至和光源不平行就会出问题。
+  - 2.VSSM是PCSS的快速版吗？ 可以这么理解，但不能替换。
+  - 3.每次算shadowmap 都要算SAT还是比较花时间的。
+
+
+
