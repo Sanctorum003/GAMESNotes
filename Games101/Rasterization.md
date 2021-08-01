@@ -50,8 +50,8 @@
 $$
 \left[
     \begin{matrix}
-        cos\theta & sin\theta \\
-        -sin\theta & cos\theta \\
+        cos\theta & -sin\theta \\
+            sin\theta & cos\theta \\
     \end{matrix}
 \right]
 $$

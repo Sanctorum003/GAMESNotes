@@ -541,6 +541,7 @@ shape(p,wo)//p为着色点,wo为出射方向
   For each wi
     Trace a ray r(p,wi)
     If ray r hit the light
+      // Lo:exit radiance , L_i:光源强度, f_r:BRDF, cosine:入射光和法线的夹角
       Lo += (1/N) * L_i * f_r * cosine / pdf(wi)
     return Lo;
 ```

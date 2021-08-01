@@ -188,9 +188,14 @@
 * 有了这个方法就能把the rendering equation拆开来写，把V拆出来，这样式子就变成了左边是visibility(遮挡)右边是shading，这样就和shadowmap的思路相吻合。
 
 * when is it accurate?(两个满足一个即可)
-  - Small support(point / directional light)
+  - Small support(g(x)的函数不为0的区域比较小)
+    - point / directional light
     - 当只有点光源的时候和方向光源的时候，积分范围小到基本没积分什么事，这个式子就成立。
-  - Smooth integrand(低频,变化不大)(diffuse(漫反射) bsdf(=brdf+btsd)/constant radiance area light)
+  - Smooth integrand(g(x)函数比较平滑)
+    - 低频,变化不大
+       - diffuse(漫反射
+       - bsdf(=brdf+btsd)
+       - constant radiance area light
     - 当在光源的radiance恒定(uniform)情况下，就比如一个面光源，当brdf是diffuse的情况下(glossy就不行)，右边的函数足够光滑，得到的结果也正确的。
 
 ## Percentage closer soft shadows(PCSS)
@@ -425,5 +430,227 @@
   - 2.VSSM是PCSS的快速版吗？ 可以这么理解，但不能替换。
   - 3.每次算shadowmap 都要算SAT还是比较花时间的。
 
+## Distance field soft shadows
+* 速度快但存储成本高.
+***
+* 定义:
+  - At any point,giving the minium distance (could be signed distance) to the closest location on an object.
+  - 空间任何一个点到物体表面的最小距离，通过数值正负得到是否在物体内部，就是距离场（SDF）。
+  - SDF引用在3D场景的话，需要存储一整个3d格子，这样存储开销就很大。
+
+* SDF的特点
+  - 可以方便对运动的物体做线性插值.
+    - 如下上面一组图,如果对A和B逐像素的进行插值,将会产生错误的效果.
+    - 如下下面一组图,通过定义SDF,对SDF插值可以帮助我们对这种运动边界的插值.
+    ![](Games202/SDF_Linear.png)
+  - Can blend any two distance functions d1,d2
+
+* 底层原理:最优传输理论
+
+*** 
+### SDF的应用:Ray Marching
+* Ray marching (sphere tracing) to perform ray-SDF intersection
+* Very smart idea behind this:
+  - The value of SDF == a "safe" distacne around
+* therefore,each time at p,just travel SDF(p) distance.
+
+![](Games202/Ray_Marching.png)
+
+* 当我们已经获得整个场景里物体SDF，有一根光线需要和SDF定义的物体隐含表面进行求交，最简单的求交方式就是sphere tracing。当光线于任意一点时，通过sdf就能得出一个安全范围内，这个光线在安全距离可以任意地向前走，在到达新的点的时候又可以通过sdf确定新的安全距离。当这个光线的距离场足够小的时候就可以很方便地和物体表面求交，或者这个光线走的足够远的时候就可以放弃这个光线的追踪。
+
+### SDF的应用:Soft Shadow
+* Use SDF to determine the (approx.不准的) percentage of occlusion
+  - 通过sdf可以获得大概有多少的范围被挡住
+* the value of SDF -> a `safe` angle seen from the eye
+  - 将安全距离的概念进行延伸，在任意一点通过sdf可以获得一个安全角度。把shading point和光源相连，所得到的安全角度越小，被遮蔽的可能越高，就可以认为安全角度越小，阴影越黑，安全角度够大就视为不被遮挡没有阴影。
+* observation
+  - Smaller "safe" angle <-> less visibility
+
+![](Games202/SDF_Soft_Shadow.png)
+
+* During ray marching
+  - Calculate the "safe" angle from the eye at every step
+    - 利用SDF进行ray marching,计算每一步的安全角度.
+  - Keep the minimum
+    - 做完ray marching后,取这条光线下最小的安全角度作为生成软阴影的依据.
+  - How to compute the angle
+    - 利用三角函数 
+      - $arcsin(\frac{SDF(P)}{||P-O||})$
+        - 问题:计算代价大.
+    - 近似
+      - $min{\frac{k \cdot SDF(P)}{||P-O||},1.0}$
+        - k的作用:Larger k <-> earlier cutoff of pernumnbra <-> harder
+          -用于控制阴影的软硬程度
+
+### 优缺点
+* Pros
+  - Fast*:在ray marching的体系下,生成软阴影和阴影硬的计算代价相当
+  - High quality
+* Cons
+  - Need precomputation
+    - 生成sdf时间消耗大
+  - Need heavy storage
+  - Artifact?
+
+# Environment Lighting
+## Shading from environment lighting
+* Recap:Environment Lighting
+  - An image representing distant lighting(无限远的光线) from all directions
+    - 场景中的不同位置的物体接受到的环境光照相同的
+  - Spherical map vs. cube map
+
+* 在环境光照和不考虑遮挡,计算物体的shading叫做IBL(Image-Based Lighting)
+* How to use it to shade a point (without shadows)?
+  - Solving the rendeing equation.
+  - $L_{o}(p,\omega) =\int_{\Omega^{+}}L_{i}(p,\omega_{i})f_{r}(p,\omega_{i},\omega_{o})cos\theta_{i}V({p,\omega_{i})d\omega_{i}}$
+    - 在IBL中不考虑渲染方程的Visbility项
+      - 再次强调一遍,在RTR中,渲染方程中拆出Visbility项的目的是,令$L_{i}$表示从光源发出的光线
+    - 根据渲染方程的定义,只接受来自上半球的光线
+
+***
+
+* 渲染方程的通常解法:
+  - General solution - Monte Carlo integration
+    - Numerical
+    - Large amount of samples required
+  - Problem - can be slow
+    - In general,sampling is not preferred in shaders*
+      - 蒙特卡洛积分有个问题，就是需要采样，如果每个shading point都要采样就太慢了。通常上只要shader中只要有sampling就不能用在实时渲染（但近几年技术的提升，可以在实时渲染使用sampling有了可行性），在这里我们要解决的是能不能不用采样的方式来算。
 
 
+## Split Sum
+### The Split Sum: 1st Stage
+* 对于BRDF如果它是glossy的,他的support范围是很小的lobe形状(如下左图)
+* 对于BRDF如果它是diffuse的,他的函数是smooth的
+
+![](Games202/BRDF_GLOOSY_DIFFUSE.png)
+
+* 根据在软阴影中的数学原理那章的积分不等式可以讲渲染方程进行近似
+  - 约等式: $\int_{\Omega}f(x)g(x)dx\approx\frac{\int_{\Omega_{G}}f(x)dx}{\int_{\Omega_{G}}dx}\cdot\int_{\Omega}g(x)dx$
+    - 注意这里拆出来的f(x)项的积分只需g(x) support的范围,因为在g(x)在support范围才有值(函数不等于0)
+      - 用$\Omega_{G}$代替可以使结果更准确一点(？猜测)
+* 将约等式应用到渲染方程中
+  $$L_{o} \approx \frac{\int_{\Omega_{f_{r}}}L_{i}(p,\omega_{i})d\omega_{i}}{\int_{\Omega_{fr}}d\omega_{i}} \cdot \int_{\Omega^{+}}f_{r}(p,\omega_{i},\omega_{o})cos\theta_{i}d\omega_{i}$$
+  - 这样可以将光照项(这里就是指环境光照)和brdf项拆出来.
+* 类比一下shadow map中的近似方法.
+  ![](Games202/ShadowMap_Math.png)
+
+***
+* 对于拆出来的光照项:$\frac{\int_{\Omega_{f_{r}}}L_{i}(p,\omega_{i})d\omega_{i}}{\int_{\Omega_{fr}}d\omega_{i}}$可以看作是对环境光照(Spherical map or cube map)的filtering(滤波 == 模糊)
+* 如何理解？
+  - $L_{i}(p,\omega_{i})$项是由光源发出的入射光线$\omega_{i}$照到p点(shading point)的radiance,由于积分域有brdf的support决定,相当于不同filter size,而整个拆出来的项就是对BRDF不为0的区域进行加权平均，这就是filtering.
+
+* Prefiltering of the environment lighting
+  - pre-generating a set of differently filtered environemnt lighting
+    - 而对于屏幕上的每一个像素(不同的$\omega_{o}$)进行光照项计算,得到的就是一张Prefiltering map.
+  - Filter size in-between can be approximated via trilinear interp.
+    - 通过与计算这些Prefiltering map,可以在进行IBL计算时候,直接查询渲染方程的光照项,对于某些特点filter size的值,可以通过mipmap中的三线性插件的方法作用与Prefiltering map得到.
+
+* Then query the pre-filtering environment lighting at the `r(mirror reflected) direction`
+  ![](Games202/BRDF_LOBE_TO_MIRROR.png)
+  -  对于真实的IBL计算是通过蒙特卡洛方法,通过采样加权得到.这和先预计算filtering,然后根据入射方向的镜面反射去查询prefiltering map的值近似,这个查询到值就是周围所有需采样的light的加权平均.这样就可以通过一次查询得到周围一圈在brdf lobe中的light的加权平均.
+
+*** 
+
+* HDRI map 是 Spherical Map.
+
+* Spherical Map的需要对球面上进行filtering，需要计算从球面上的filte size到像素上的对应范围
+
+* diffuse light是对整个environment map的平均,可以对normal方向Prefiltering map
+
+* 一般brdf反射出来的范围都比较像一个lobe(花瓣形状)
+
+### The Split Sum: 2st Stage
+* 第一步解决了拆出来的左侧的项的计算问题,还需要求右侧brdf的积分.
+
+![](Games202/Split_Sum_brdf.jpg)
+
+* 要想使用不采样的方法,一般通过与计算.假设为微表面,得到根据微表面原理的BRDF项(具体见Games101):
+$$f(\mathbf{i}, \mathbf{o})=\frac{\mathbf{F}(\mathbf{i}, \mathbf{h}) \mathbf{G}(\mathbf{i}, \mathbf{o}, \mathbf{h}) \mathbf{D}(\mathbf{h})}{4(\mathbf{n}, \mathbf{i})(\mathbf{n}, \mathbf{o})}$$
+  - 菲涅尔项F通过Schlick近似计算
+  $$\begin{aligned} R(\theta) &=R_{0}+\left(1-R_{0}\right)(1-\cos \theta)^{5} \\ R_{0} &=\left(\frac{n_{1}-n_{2}}{n_{1}+n_{2}}\right)^{2} \end{aligned}$$
+  - 发现分布D的公式如下:
+    $$D(h) = \frac{e^{\frac{tan^{2}\theta_{h}}{a^{2}}}}{\pi a^{2}cos^{4}\theta_{h}}$$
+    - a为粗糙度,
+    - $\theta$为半程向量(可以近似成入射角度相关的数)与法线夹角
+
+* 如果直接做与计算,我们需要处理`菲尼尔项(颜色)F`,`粗糙度`，`不同的入射角度个出射角度`等,需要建立高维的表存储,不太行.
+
+***
+
+* 我们通过Schlick近似和D(h)计算将BRDF压缩为3维数(基础反射率$R_{0}$,半程向量与法线夹角$\theta$,粗糙度$a^{2}$)
+* 然后将Schlick近似带入渲染方程的右边一项,可以再将常数R0项提取出来,这样需要积分的变量只有roughnes和入射角度，这样就可以预计算存成一个二维的数组，这样就又没有采样了。
+
+![](Games202/Split_Sum_Schlick.jpg)
+
+#### 课后问题
+* 计算空间中某个点的距离场要遍历所有物体吗。
+
+  - 不用，每个物体单独算距离场，取所有物体距离场最小的值就行。
+
+* 感觉都是近似
+
+  - 没错，这节课后面所有内容也都是近似，取这些近似都是为了算得更快，并不牺牲太多质量，这些近似都是很聪明的需要学习。
+
+* sdf有什么问题
+
+  - 有，sdf生成的物体表面不好贴纹理，uv不好得到
+
+*  frenel需要预计算吗
+
+  - frenel项被拆开了，避免了对变量的依赖性
+
+* 这张预计算是固定的吗？
+
+  - 是固定的。
+
+* Microfacet在ggx中会多参数吗
+
+ - 不会
+
+* 深度学习在实时渲染中有什么应用吗
+
+  - 深度学习在实时渲染中并不成功，太慢了。
+
+## Shadow from environemnt lighting
+* In general,very difficult for real-time rendering
+* Different persepctives of view
+  - As a many-light problem: Cost of SM is linearly to #light
+    - 在实时渲染下，环境光照下的阴影很难做到。可以把环境光照认为成很多光源的光照，想得到一个场景的阴影就要得到每一个光源的shadowmap,这样开销就很大。
+  - As a sampling problem: Visibility term V can be arbitrarily complex and V cannot be easily spearated from the environemnt.
+    - shading point，在采样各个方向的光照,更难的是并不知道任何一个shading point看向任何一个方向的visibility term是什么，需要大量采样的样本.另外brdf可能是非常高频的glossy brdf,不容易把brdf给拆分开来。
+
+*** 
+
+* Industrial solution
+  - Generate one(or a little bit more) shadows from the brightest light sources
+
+* Related reserach
+  - Imperfect shadow maps
+    - 这篇文章并不是专门讲环境光照下的阴影，研究的是全局光照下的阴影。
+  - Light cuts
+    - 把场景中的反射物当做小光源，把这些光源归类，近似出怎么照亮一个点的结果。
+  - RTRT (might be the ultimate solution)
+    - RTRT（实时光追）可能是最终解决方案。
+  - Precomputed radiance transfer
+    - prt可以得到非常准确的环境光的阴影，但有一定代价，本节课会详细讲解。
+
+## Real-time environment lgihting(& global illumination)
+### Background knowledge
+* 傅里叶变换:Represent a function as a weighted sum of sines and cosines
+* filtering = Getting rid of certain frequency contents
+* 卷积：取周围一定区域进行平均就是卷积，进行卷积的范围大小就是卷积核，卷积操作也能起到模糊的效果。把原图的频域和卷积核的频域相乘再逆傅里叶变化就能得到模糊后的结果。
+***
+*  两种函数相乘的积分可以认为成一个卷积(滤波)操作。其中只要有一个函数是低频的，得到的结果也是低频，低频也就是smooth(函数变化没有那么剧烈)。
+* The frequency of the intergral is the lowest of any individual's
+  - 因为两个频谱在频域相乘,高频部分为0相乘后就为0.
+
+### Basis Functions(基函数)  
+* A set of functions that can be used to represent other functions in general
+  - 基函数（Basis Functions）就是一个函数可以用不同函数的组合来表达。傅里叶变化就是基函数。
+  $$f(x) = \Sigma_{i} c_{i} \cdot B_{i}(x)$$
+* The Fourier series is a set of basis functions
+* The polynomial series can also be a set of basis functions
+  - 函数的多项式展开
+
+### Spherical Harmonics(SH 球面谐波函数)
